@@ -16,7 +16,7 @@
 
             pd = new PitchDetector();
 
-            recordButton.addEventListener("click", pd.startRecord.bind(pd))
+            recordButton.addEventListener("click", pd.toggleRecord.bind(pd))
         })
 
         const pitchMethods = ["default","schmitt", "fcomb", "mcomb", "specacf", "yin", "yinfft", "yinfast"]
@@ -28,6 +28,12 @@
             #scriptProcessor;
             #bufferSize = 4096;
             #aubioPitch;
+            #stream;
+            #recording = false;
+            #avgFrequency = {
+                count: 0,
+                value: 0
+            }
 
 
             constructor( ) {  
@@ -49,17 +55,41 @@
                 });
             }
 
+            toggleRecord() {
+                if (this.#recording) {
+                    this.stopRecord();
+                    recordButton.innerHTML = "Record the Song of Ice";
+                } else {
+                    this.startRecord();
+                    recordButton.innerHTML = "Stop recording"
+                }
+                this.#recording = !this.#recording;
+            }
+
+            stopRecord() {
+                const tracks = this.#stream.getTracks();
+                tracks.forEach((track) => {
+                    track.stop();
+                });
+                this.#avgFrequency = {
+                        count: 0,
+                        value: 0
+                }
+            }
+
             startRecord() {
                 navigator.mediaDevices
                     .getUserMedia({ audio: true })
                     .then(stream => {
+                        this.#stream = stream;
                         this.#audioContext.createMediaStreamSource(stream).connect(this.#analyser);
                         this.#analyser.connect(this.#scriptProcessor);
                         this.#scriptProcessor.connect(this.#audioContext.destination);
                         this.#scriptProcessor.addEventListener("audioprocess", (event) => {
                             const data = event.inputBuffer.getChannelData(0)
                             const frequency = this.#aubioPitch.do(data);
-                            frequencyEl.innerHTML = frequency;
+                            this.#avgFrequency.value = (this.#avgFrequency.value + frequency) / ++count;
+                            frequencyEl.innerHTML = this.#avgFrequency.value;
                         });
                     })
                     .catch(function (error) {
@@ -103,12 +133,32 @@
             }
         }
         </script>
+        <style>
+
+            body {  
+                font-family: arial;
+            }
+            #record {
+                display: block;
+                margin: 0 auto;
+                font-size: 2em;
+            }
+            #frequency,
+            #maxWeight {
+                display: block;
+                margin: 0 auto;
+                width: 100%;
+                text-align: center;
+                font-size: 3em;
+            }
+        </style>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
     </head>
 <body>
     
     <button id="record">Record the Song of Ice</button>
 
-    <div id="frequency"></div>
+    <div id="frequency">??? Hz</div>
     <div id="maxWeight"></div>
 
 </body>
