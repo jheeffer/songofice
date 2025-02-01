@@ -88,7 +88,8 @@
                         this.#scriptProcessor.addEventListener("audioprocess", (event) => {
                             const data = event.inputBuffer.getChannelData(0)
                             const frequency = this.#aubioPitch.do(data);
-                            this.#avgFrequency.value = (this.#avgFrequency.value + frequency) / ++count;
+                            if (frequency)
+                                this.#avgFrequency.value = (this.#avgFrequency.value + frequency) / ++this.#avgFrequency.count;
                             frequencyEl.innerHTML = this.#avgFrequency.value;
                         });
                     })
