@@ -48,8 +48,8 @@
                 aubio().then(({ Pitch }) => {
                     this.#aubioPitch = new Pitch(
                         pitchMethods[0],
-                        this.#scriptProcessor.bufferSize * 4, // winsize
-                        this.#scriptProcessor.bufferSize, // stepsize
+                        this.#scriptProcessor.bufferSize * 1, // winsize
+                        1, // stepsize
                         this.#audioContext.sampleRate // samplerate
                     )
                 });
@@ -78,19 +78,20 @@
             }
 
             startRecord() {
+                var self = this;
                 navigator.mediaDevices
                     .getUserMedia({ audio: true })
-                    .then(stream => {
-                        this.#stream = stream;
-                        this.#audioContext.createMediaStreamSource(stream).connect(this.#analyser);
-                        this.#analyser.connect(this.#scriptProcessor);
-                        this.#scriptProcessor.connect(this.#audioContext.destination);
-                        this.#scriptProcessor.addEventListener("audioprocess", (event) => {
+                    .then(function (streamArg) {
+                        self.#stream = streamArg;
+                        self.#audioContext.createMediaStreamSource(self.#stream).connect(self.#analyser);
+                        self.#analyser.connect(self.#scriptProcessor);
+                        self.#scriptProcessor.connect(self.#audioContext.destination);
+                        self.#scriptProcessor.addEventListener("audioprocess", function(event) {
                             const data = event.inputBuffer.getChannelData(0)
-                            const frequency = this.#aubioPitch.do(data);
+                            const frequency = self.#aubioPitch.do(data);
                             if (frequency)
-                                this.#avgFrequency.value = (this.#avgFrequency.value + frequency) / ++this.#avgFrequency.count;
-                            frequencyEl.innerHTML = this.#avgFrequency.value;
+                                self.#avgFrequency.value = (self.#avgFrequency.value + frequency) / ++self.#avgFrequency.count;
+                            frequencyEl.innerHTML = self.#avgFrequency.value;
                         });
                     })
                     .catch(function (error) {
