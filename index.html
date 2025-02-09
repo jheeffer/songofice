@@ -2,104 +2,221 @@
 <html>
     <head>
         <script src="https://unpkg.com/aubiojs"></script>
-        <script>
+        <script type="module" src="js/frequencyBars.js"></script>
+        <script type="text/javascript">
 
         let recordButton 
         let frequencyEl
+        let thicknessEl
         let maxWeightEl
+        let audioEl 
+        let audioSourceEl
+        let sampleSelectEl
+        let pitchMethodEl
+        let frequencyBarsEl
         let pd 
+        let fb
+        let micStream
 
         window.addEventListener("load", evt => {
             recordButton = document.getElementById("record");
             frequencyEl = document.getElementById("frequency");
+            thicknessEl = document.getElementById("thickness");
             maxWeightEl = document.getElementById("maxWeight");
+            audioEl = document.getElementById("sampleAudio"); 
+            audioSourceEl = document.getElementById("sampleAudioSource"); 
+            sampleSelectEl = document.getElementById("sampleSelect");  
+            pitchMethodEl = document.getElementById("pitchMethod");  
+            frequencyBarsEl = document.getElementById("frequencyBars");
 
-            pd = new PitchDetector();
+            for(let n in PitchDetector.pitchMethods) {
+                pitchMethodEl.options.add(new Option(PitchDetector.pitchMethods[n]))
+            }
 
-            recordButton.addEventListener("click", pd.toggleRecord.bind(pd))
+            pd = new PitchDetector({
+                pitchMethod: pitchMethodEl.value
+            });
+
+            pitchMethodEl.addEventListener("change", e => {
+                pd.setPitchMethod(e.target.value)
+            })
+
+            sampleSelectEl.addEventListener("change", e => {
+                const filename = e.target.value.indexOf(".") === -1 ? e.target.value + ".wav" : e.target.value
+                audioSourceEl.src = "samples/" + filename;
+                audioEl.load();
+            })
+            sampleSelectEl.dispatchEvent(new Event('change'));
+
+            audioEl.addEventListener("play", e => {
+                pd.setSource(audioEl)
+                pd.resumeContext()
+                fb = new FrequencyBars({
+                    canvas: frequencyBarsEl,
+                    analyser: pd.getAnalyser()
+                })
+            })
+            audioEl.addEventListener("ended", e => {
+                pd.suspendContext()
+                fb.cancelDraw();
+            })
+
+            recordButton.addEventListener("click", e => {
+                if (micStream) {
+                    pd.setSource(micStream);
+                } else { 
+                    navigator.mediaDevices
+                        .getUserMedia({ audio: true })
+                        .then(stream => {
+                            micStream = stream;
+                            pd.setSource(stream) 
+                            pd.resumeContext()
+                        })
+                        .catch(function (error) {
+                            alert(error.name + ": " + error.message);
+                        });
+                }
+            });
         })
 
-        const pitchMethods = ["default","schmitt", "fcomb", "mcomb", "specacf", "yin", "yinfft", "yinfast"]
+
+        const avgFrequency = {
+                count: 0,
+                value: 0
+        }
+        function updateFrequency(frequency) {
+            if (frequency === false) {
+                avgFrequency.count = 0;
+                avgFrequency.value = 0;
+            }
+            if (frequency > 170) {
+                avgFrequency.value +=  (frequency - avgFrequency.value) / ++avgFrequency.count;
+            }
+            frequencyEl.innerHTML = avgFrequency.value + " Hz"
+            thicknessEl.innerHTML = 34300 / avgFrequency.value + " mm";
+            maxWeightEl.innerHTML = Math.pow((34300 / avgFrequency.value) / 10, 2) * 6 + " kg"
+        }
 
         class PitchDetector  {
 
             #audioContext;
-            #analyser;
+            #audioSource;
+            #audioAnalyser;
+            #audioFilter;
+            #micStream;
             #scriptProcessor;
             #bufferSize = 4096;
+            #aubio;
             #aubioPitch;
+            #pitchMethod;
             #stream;
             #recording = false;
-            #avgFrequency = {
-                count: 0,
-                value: 0
+
+            static pitchMethods = ["default","schmitt", "fcomb", "mcomb", "specacf", "yin", "yinfft", "yinfast"]
+
+
+            constructor(settings) {  
+                this.normalizeBrowserAPI();
+                this.#pitchMethod = settings.pitchMethod ?? PitchDetector.pitchMethods[0];
+                aubio().then(aubioObj => {
+                    this.#aubio = aubioObj;
+                });
             }
 
+            initiate() {
+                if (!this.#audioContext) {
+                    this.#audioContext = new window.AudioContext();
+                    this.#audioContext.suspend();           
+                    this.#scriptProcessor = this.#audioContext.createScriptProcessor(
+                        this.#bufferSize,
+                        1,
+                        1
+                    );
+                    this.updateAubioPitch()
+                    this.#scriptProcessor.addEventListener("audioprocess", event => {
+                        const data = event.inputBuffer.getChannelData(0)
+                        const frequency = this.#aubioPitch.do(data);
+                        console.log(frequency)
+                        updateFrequency(frequency)
+                    });
+                    this.#audioFilter =  new BiquadFilterNode(this.#audioContext, {
+                        type: 'highpass',
+                        frequency: 80,
+                        Q: 1
+                    }); 
+                    this.#audioFilter.connect(this.#scriptProcessor);
+                    this.#audioAnalyser = new AnalyserNode(this.#audioContext);
+                    this.#audioFilter.connect(this.#audioAnalyser)
+                    this.#audioAnalyser.connect(this.#audioContext.destination);
+                }
+            }
 
-            constructor( ) {  
-                this.normalizeGetUserMedia();
-                this.#audioContext = new window.AudioContext();
-                this.#analyser = this.#audioContext.createAnalyser();
-                this.#scriptProcessor = this.#audioContext.createScriptProcessor(
-                    this.#bufferSize,
-                    1,
-                    1
-                );
-                aubio().then(({ Pitch }) => {
-                    this.#aubioPitch = new Pitch(
-                        pitchMethods[0],
-                        this.#scriptProcessor.bufferSize * 1, // winsize
-                        1, // stepsize
-                        this.#audioContext.sampleRate // samplerate
-                    )
-                });
+            getAnalyser() {
+                return this.#audioAnalyser;
+            }
+
+            setPitchMethod(method) {
+                this.#pitchMethod = method;
+                this.updateAubioPitch();
+            }
+
+            updateAubioPitch() {
+                this.initiate();
+                if (this.#aubioPitch)
+                    this.#aubioPitch.delete();
+                this.#aubioPitch = new this.#aubio.Pitch(
+                    this.#pitchMethod,
+                    this.#scriptProcessor.bufferSize * 8, // buffer/win size
+                    this.#scriptProcessor.bufferSize, // hop size
+                    this.#audioContext.sampleRate // samplerate
+                )
+            }
+
+            setSource(source) {
+                this.initiate();
+                if (source instanceof HTMLAudioElement) {
+                    this.disconnectSource();
+                    this.#audioSource = this.#audioContext.createMediaElementSource(source)
+                    this.#audioSource.connect(this.#audioFilter)
+                    //this.#audioSource.connect(this.#audioContext.destination)
+                } else if (source instanceof MediaStream) {
+                    this.disconnectSource();
+                    this.#audioSource = this.#audioContext.createMediaStreamSource(source)
+                    this.#audioSource.connect(this.#audioFilter)
+                }
+            }
+
+            disconnectSource() {
+                if (this.#audioSource)
+                    this.#audioSource.disconnect();
             }
 
             toggleRecord() {
                 if (this.#recording) {
-                    this.stopRecord();
+                    this.stopContext();
                     recordButton.innerHTML = "Record the Song of Ice";
                 } else {
-                    this.startRecord();
+                    if (!this.#audioContext) {
+                        this.startRecord();
+                    }   
+                    this.setSource(this.#micStream)
+                    this.resumeContext();
                     recordButton.innerHTML = "Stop recording"
                 }
                 this.#recording = !this.#recording;
             }
 
-            stopRecord() {
-                const tracks = this.#stream.getTracks();
-                tracks.forEach((track) => {
-                    track.stop();
-                });
-                this.#avgFrequency = {
-                        count: 0,
-                        value: 0
-                }
+            suspendContext() {
+                setTimeout(() => this.#audioContext.suspend(), 1);
             }
 
-            startRecord() {
-                var self = this;
-                navigator.mediaDevices
-                    .getUserMedia({ audio: true })
-                    .then(function (streamArg) {
-                        self.#stream = streamArg;
-                        self.#audioContext.createMediaStreamSource(self.#stream).connect(self.#analyser);
-                        self.#analyser.connect(self.#scriptProcessor);
-                        self.#scriptProcessor.connect(self.#audioContext.destination);
-                        self.#scriptProcessor.addEventListener("audioprocess", function(event) {
-                            const data = event.inputBuffer.getChannelData(0)
-                            const frequency = self.#aubioPitch.do(data);
-                            if (frequency)
-                                self.#avgFrequency.value = (self.#avgFrequency.value + frequency) / ++self.#avgFrequency.count;
-                            frequencyEl.innerHTML = self.#avgFrequency.value;
-                        });
-                    })
-                    .catch(function (error) {
-                        alert(error.name + ": " + error.message);
-                    });
-            };
+            resumeContext() {
+                this.updateAubioPitch();
+                updateFrequency(false)
+                this.#audioContext.resume();
+            }
             
-            normalizeGetUserMedia() {
+            normalizeBrowserAPI() {
 
                 window.AudioContext = window.AudioContext || window.webkitAudioContext;
                 if (!window.AudioContext) {
@@ -146,6 +263,7 @@
                 font-size: 2em;
             }
             #frequency,
+            #thickness,
             #maxWeight {
                 display: block;
                 margin: 0 auto;
@@ -157,11 +275,32 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
     </head>
 <body>
+
+    <select id="sampleSelect">
+        <option selected="selected">22</option>
+        <option>35</option>
+        <option>45</option>
+        <option>60</option>
+        <option>80</option>
+        <option>120</option>
+        <option>laser-gun-noises-from-slightly-frozen-lake.mp3</option>
+    </select>
+
+    <select id="pitchMethod">
+
+    </select>
+
+    <audio controls id="sampleAudio">
+        <source id="sampleAudioSource" src="samples/22.wav"></source>
+    </audio>
     
     <button id="record">Record the Song of Ice</button>
 
     <div id="frequency">??? Hz</div>
-    <div id="maxWeight"></div>
+    <div id="thickness">??? cm</div>
+    <div id="maxWeight">??? kg</div>
+
+    <canvas id="frequencyBars" width="1280" height="200"></canvas>
 
 </body>
 </html>
